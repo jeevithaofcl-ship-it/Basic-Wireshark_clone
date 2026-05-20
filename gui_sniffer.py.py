@@ -1,82 +1,189 @@
-import socket
-import struct
 import tkinter as tk
 from tkinter import ttk
-
+import socket
+import struct
 import threading
-from datetime import datetime
+import csv
 
-# GUI setup
+# Main Window
 root = tk.Tk()
-root.title("Wireshark Basic Clone")
-root.geometry("900x400")
+root.title("Wireshark Clone - Major Project")
+root.geometry("1000x500")
+packet_count=0
 
-# Table columns
-columns = ("Time", "Source", "Destination", "Protocol", "Src Port", "Dest Port", "Length")
-tree = ttk.Treeview(root, columns=columns, show="headings")
+selected_filter = tk.StringVar()
+selected_filter.set("ALL")
+
+search_ip=tk.StringVar()
+
+sniffing=False
+
+# CSV File Setup
+csv_file = open("packets.csv", "w", newline="")
+
+csv_writer = csv.writer(csv_file)
+
+csv_writer.writerow([
+    "Source IP",
+    "Destination IP",
+    "Protocol",
+    "Source Port",
+    "Destination Port",
+    "Length",
+    ])
+
+# Table Columns
+columns = (
+    "Source IP",
+    "Destination IP",
+    "Protocol",
+    "Source Port",
+    "Destination Port",
+    "Length"
+)
+
+tree = ttk.Treeview(root, columns=columns, show='headings')
 
 for col in columns:
     tree.heading(col, text=col)
-    tree.column(col, width=120)
+    tree.column(col, width=150)
 
 tree.pack(fill=tk.BOTH, expand=True)
+counter_label = tk.Label(
+    root,
+    text="Packets Captured: 0",
+    font=("Arial", 12)
+)
 
-# Functions
-def ipv4(addr):
-    return '.'.join(map(str, addr))
+counter_label.pack()
 
-def ethernet_frame(data):
-    dest_mac, src_mac, proto = struct.unpack('!6s6sH', data[:14])
-    return socket.htons(proto), data[14:]
+filter_menu = tk.OptionMenu(
+    root,
+    selected_filter,
+    "ALL",
+    "TCP",
+    "UDP"
+)
 
-def ipv4_packet(data):
-    
-    version_header_length = data[0]
-    header_length = (version_header_length & 15) * 4
-    ttl, proto, src, target = struct.unpack('!8xBB2x4s4s', data[:20])
-    return ttl, proto, ipv4(src), ipv4(target), data[header_length:]
+filter_menu.pack()
 
+search_entry = tk.Entry(
+    root,
+    textvariable=search_ip,
+    width=30
+)
 
-# Sniffer function
-def sniff():
+search_entry.pack()
+
+search_entry.insert(0, "Search IP")
+
+# Packet Capture Function
+def start_sniffing():
+
+    global sniffing
+    global packet_count
+
+    sniffing=True
+
     conn = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(3))
 
-    while True:
-        raw_data, addr = conn.recvfrom(65535)
-        eth_proto, data = ethernet_frame(raw_data)
+    while sniffing:
 
-        if eth_proto == 8:
-            ttl, proto, src, target, data = ipv4_packet(data)
+        raw_data, addr = conn.recvfrom(65536)
 
-            # Port extraction
-            src_port = ""
-            dest_port = ""
-            if proto == 6 or proto == 17:
-                src_port, dest_port = struct.unpack('!HH', data[:4])
+        eth_proto = struct.unpack('!H', raw_data[12:14])[0]
 
-            # Protocol name
+        if eth_proto == 0x0800:
+
+            ip_header = raw_data[14:34]
+
+            ttl, proto, src, target = struct.unpack(
+                '!8xBB2x4s4s',
+                ip_header[:20]
+            )
+
+            src_ip = socket.inet_ntoa(src)
+            dest_ip = socket.inet_ntoa(target)
+
+            src_port = 0
+            dest_port = 0
+
             if proto == 6:
-                pname = "TCP"
+
+                protocol = "TCP"
+
+                tcp_header = raw_data[34:54]
+
+                src_port, dest_port = struct.unpack('!HH', tcp_header[:4])
+
             elif proto == 17:
-                pname = "UDP"
+
+                protocol = "UDP"
+
+                udp_header = raw_data[34:42]
+
+                src_port, dest_port = struct.unpack('!HH', udp_header[:4])
+
             else:
-                pname = "OTHER"
+                protocol = str(proto)
 
-            # Time
-            time_now = datetime.now().strftime("%H:%M:%S")
+            # Insert into GUI Table
 
-            # Insert into GUI
-            tree.insert("", "end", values=(
-                time_now, src, target, pname, src_port, dest_port, len(raw_data)
-            ))
+        if (
+       selected_filter.get() == "ALL"
+       or selected_filter.get() == protocol
+):
+            tree.insert(
+                "",
+                tk.END,
+                values=(
+                    src_ip,
+                    dest_ip,
+                    protocol,
+                    src_port,
+                    dest_port,
+                    len(raw_data)
+                )
+            )
+        packet_count += 1
 
-# Start button
-def start_sniffing():
-    t = threading.Thread(target=sniff)
-    t.daemon = True
-    t.start()
+        counter_label.config(
+        text=f"Packets Captured: {packet_count}"
+)
 
-btn = tk.Button(root, text="Start Sniffing", command=start_sniffing)
-btn.pack()
+        csv_writer.writerow([
+    src_ip,
+    dest_ip,
+    protocol,
+    src_port,
+    dest_port,
+    len(raw_data)
+])
+        
+def stop_sniffing():
+
+    global sniffing
+
+    sniffing = False
+# Start Button
+start_button = tk.Button(
+    root,
+    text="Start Sniffing",
+    command=lambda: threading.Thread(
+        target=start_sniffing,
+        daemon=True
+    ).start()
+)
+
+start_button.pack()
+
+# Stop Button
+stop_button = tk.Button(
+    root,
+    text="Stop Sniffing",
+    command=stop_sniffing
+)
+
+stop_button.pack()
 
 root.mainloop()
